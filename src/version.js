@@ -28,6 +28,15 @@ function computeBuild() {
 
 export const BUILD = computeBuild();
 
+// Identity a proxy reports in /jev/health. Only a payload carrying this exact id is ours:
+// `status` and `stop` never signal a process that answers with anything else.
+export const APP = 'jev-sol-terra';
+
+/** @returns {boolean} true only when the /jev/health payload says it is this project's proxy */
+export function isOurProxy(health) {
+  return health?.app === APP;
+}
+
 /**
  * Compares a running proxy's /jev/health payload with the code on disk.
  * @returns {{status: 'current'|'stale', message: string}}
@@ -40,6 +49,6 @@ export function compareBuild(health, local = { version: VERSION, build: BUILD })
   return {
     status: 'stale',
     message: `the running proxy is ${running}, but the code on disk is v${local.version} build ${local.build}; `
-      + 'stop it and rerun "jev-effort serve" so it picks up the update',
+      + 'stop it and rerun "jev-sol-terra serve" so it picks up the update',
   };
 }
