@@ -1,12 +1,15 @@
 // Transparent Responses / Chat Completions proxy that rewrites only the reasoning
 // effort, so the prompt prefix (and therefore prompt caching) is untouched.
+// A routed `jev-auto` request also gets its model rewritten (GPT-6.1 Terra or Sol).
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { createRouter } from './router.js';
 import { parseTurn } from './trajectory.js';
 import { parseChatTurn, chatWantsReasoning, applyChatEffort, chatSessionKey } from './chat.js';
 import { createDecisionLog, formatDecision, usageTokens } from './log.js';
-import { VERSION, BUILD } from './version.js';
+import { wantsModelRouting, modelId, clampEffort } from './model.js';
+import { createReasoningTracker } from './reasoning.js';
+import { VERSION, BUILD, APP } from './version.js';
 
 const HOP_BY_HOP = new Set(['host', 'connection', 'keep-alive', 'transfer-encoding', 'content-length',
   'content-encoding', 'accept-encoding', 'proxy-connection', 'upgrade', 'te', 'trailer']);
@@ -69,6 +72,8 @@ function sessionKeyOf(body, headers) {
 }
 
 const MAX_JSON_SNIFF = 4 * 1024 * 1024;
+// Data lines that can carry the final usage or a reasoning item; other lines are not parsed.
+const SNIFF_MARKERS = ['"usage"', 'output_item.done'];
 
 // Per-protocol hooks: how to read the trajectory, whether the request is a
 // reasoning request, and how to rewrite its effort.
@@ -90,17 +95,32 @@ const PROTOCOLS = {
   },
 };
 
-function isOpenRouter(base) {
+export function isOpenRouter(base) {
   return /(^|\.)openrouter\.ai$/i.test(new URL(base).hostname);
 }
 
-// Watches the response for the final usage without buffering an SSE stream:
-// Responses `response.completed`, a chat chunk's `usage`, or a plain JSON body.
-function usageSniffer(contentType) {
+// Watches the response without buffering an SSE stream. It keeps the final usage
+// (Responses `response.completed`, a chat chunk's `usage`, or a plain JSON body) and
+// hands every parsed event to onEvent, so each data line is parsed once.
+function usageSniffer(contentType, onEvent = () => {}) {
   const decoder = new TextDecoder();
   const isJson = /application\/json/i.test(contentType ?? '');
   let pending = '';
   let usage = null;
+
+  function consumeLine(line) {
+    if (!line.startsWith('data:') || !SNIFF_MARKERS.some((m) => line.includes(m))) return;
+    let event;
+    try {
+      event = JSON.parse(line.slice(5));
+    } catch {
+      return; // Partial or non-JSON data line; ignore.
+    }
+    if (!event || typeof event !== 'object') return;
+    usage = event.response?.usage ?? event.usage ?? usage;
+    onEvent(event);
+  }
+
   return {
     push(chunk) {
       pending += decoder.decode(chunk, { stream: true });
@@ -110,21 +130,20 @@ function usageSniffer(contentType) {
       }
       const lines = pending.split('\n');
       pending = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data:') || !line.includes('"usage"')) continue;
-        try {
-          const event = JSON.parse(line.slice(5));
-          usage = event.response?.usage ?? event.usage ?? usage;
-        } catch {
-          // Partial or non-JSON data line; ignore.
-        }
-      }
+      for (const line of lines) consumeLine(line);
     },
     finish() {
-      if (!isJson || !pending) return;
+      const rest = pending;
+      pending = '';
+      if (!isJson) {
+        consumeLine(rest);
+        return;
+      }
+      if (!rest) return;
       try {
-        const body = JSON.parse(pending);
+        const body = JSON.parse(rest);
         usage = body.usage ?? body.response?.usage ?? usage;
+        onEvent(body);
       } catch {
         // Truncated or non-JSON body; no usage.
       }
@@ -168,12 +187,63 @@ function abortOnClose(res) {
   return controller.signal;
 }
 
+// JEV_MODE=off leaves the effort alone, but a jev-auto alias still needs a real model:
+// the pinned one, else terra.
+function offModeModel(config) {
+  const pinned = config.modelMode !== 'auto';
+  return {
+    effort: null, from: null, step: 0, hold: 0, reasons: [], source: 'off', cost: null, ms: 0,
+    model: pinned ? config.modelMode : 'terra',
+    fromModel: null,
+    modelReasons: [pinned ? 'pinned model' : 'mode off: terra'],
+  };
+}
+
+// The decision as it went upstream: the effort only when it was applied, the model as sent.
+// `modelKey` keeps the configured key ('terra' | 'sol') for display; `model` is the upstream id.
+function describeSent(decision, { applyEffort, model, requested }) {
+  const { model: modelKey, ...rest } = decision;
+  return {
+    ...rest,
+    modelKey,
+    model,
+    requested,
+    effort: applyEffort ? clampEffort(modelKey, rest.effort) : null,
+    from: applyEffort ? rest.from : null,
+  };
+}
+
 export function createProxy(config, deps = {}) {
   const router = createRouter(config, deps);
   const log = deps.log ?? createDecisionLog(config);
   const print = deps.print ?? ((s) => process.stdout.write(`${s}\n`));
-  const stats = { requests: 0, routed: 0, byEffort: {}, reasoningTokens: {} };
-  const identity = { version: VERSION, build: BUILD, pid: process.pid, startedAt: new Date().toISOString() };
+  const openRouterOf = deps.isOpenRouter ?? isOpenRouter;
+  const tracker = createReasoningTracker();
+  const stats = { requests: 0, routed: 0, byEffort: {}, byModel: {}, reasoningTokens: {} };
+  const identity = { app: APP, version: VERSION, build: BUILD, pid: process.pid, startedAt: new Date().toISOString() };
+
+  // Model and effort for this generation, or null when the request is left alone.
+  async function decide(protocol, body, raw, { session, judgeTarget, applyEffort, routeModel }) {
+    if (config.mode === 'off') return routeModel ? offModeModel(config) : null;
+    if (!applyEffort && !routeModel) return null;
+    return router.route(body, session, judgeTarget, protocol.parse(body), { routeModel, bodyBytes: raw.length });
+  }
+
+  // Applies the decision to a copy of the request: the effort when it is applied, then the
+  // model id. Responses also drops the reasoning items the routed model cannot read.
+  function rewriteRequest(protocol, body, decision, { applyEffort, inject, openRouter }) {
+    const withEffort = applyEffort ? protocol.apply(body, clampEffort(decision.model, decision.effort), inject) : body;
+    if (!decision.model) return withEffort;
+    const routed = { ...withEffort, model: modelId(decision.model, config, openRouter) };
+    return protocol === PROTOCOLS.responses ? { ...routed, input: tracker.strip(routed.input, routed.model) } : routed;
+  }
+
+  function countSent(sent) {
+    stats.routed++;
+    if (sent.effort) stats.byEffort[sent.effort] = (stats.byEffort[sent.effort] ?? 0) + 1;
+    const model = String(sent.model ?? '-');
+    stats.byModel[model] = (stats.byModel[model] ?? 0) + 1;
+  }
 
   async function handleRouted(req, res, raw, protocol) {
     const base = upstreamBase(config, req.headers);
@@ -187,17 +257,23 @@ export function createProxy(config, deps = {}) {
       return res.end(JSON.stringify({ error: { message: `jev: bad request body: ${err.message}` } }));
     }
 
-    let decision = null;
+    const requested = body.model;
     const session = protocol.session(body, req.headers);
+    const openRouter = openRouterOf(base);
     // OpenRouter drops reasoning params a model lacks, so chat requests there are routed even without one.
-    const inject = protocol === PROTOCOLS.chat && isOpenRouter(base);
-    if (config.mode !== 'off' && (protocol.wantsReasoning(body) || inject)) {
-      const judgeTarget = protocol.judge ? { url, headers: forwardHeaders(req.headers) } : null;
-      decision = await router.route(body, session, judgeTarget, protocol.parse(body));
-      body = protocol.apply(body, decision.effort, inject);
-      stats.routed++;
-      stats.byEffort[decision.effort] = (stats.byEffort[decision.effort] ?? 0) + 1;
-      if (!config.quiet) print(formatDecision(decision));
+    const inject = protocol === PROTOCOLS.chat && openRouter;
+    const applyEffort = config.mode !== 'off' && (protocol.wantsReasoning(body) || inject);
+    const judgeTarget = protocol.judge ? { url, headers: forwardHeaders(req.headers) } : null;
+    const decision = await decide(protocol, body, raw, {
+      session, judgeTarget, applyEffort, routeModel: wantsModelRouting(body, config),
+    });
+    if (decision) body = rewriteRequest(protocol, body, decision, { applyEffort, inject, openRouter });
+
+    const upstreamModel = body.model;
+    const sent = decision ? describeSent(decision, { applyEffort, model: upstreamModel, requested }) : null;
+    if (sent) {
+      countSent(sent);
+      if (!config.quiet) print(formatDecision(sent));
     }
 
     const upstream = await fetch(url, {
@@ -206,18 +282,19 @@ export function createProxy(config, deps = {}) {
       body: JSON.stringify(body),
       signal: abortOnClose(res),
     });
-    const sniff = usageSniffer(upstream.headers.get('content-type'));
+    const onEvent = protocol === PROTOCOLS.responses ? (event) => tracker.observe(event, upstreamModel) : undefined;
+    const sniff = usageSniffer(upstream.headers.get('content-type'), onEvent);
     await pipeUpstream(res, upstream, (c) => sniff.push(c));
     sniff.finish();
 
-    if (decision) {
+    if (sent) {
       const { reasoning } = usageTokens(sniff.usage);
-      if (reasoning != null) {
-        stats.reasoningTokens[decision.effort] = (stats.reasoningTokens[decision.effort] ?? 0) + reasoning;
+      if (reasoning != null && sent.effort) {
+        stats.reasoningTokens[sent.effort] = (stats.reasoningTokens[sent.effort] ?? 0) + reasoning;
       }
       log.write({
-        ts: new Date().toISOString(), model: body.model, session, api: protocol === PROTOCOLS.chat ? 'chat' : 'responses',
-        ...decision, status: upstream.status, usage: sniff.usage,
+        ts: new Date().toISOString(), session, api: protocol === PROTOCOLS.chat ? 'chat' : 'responses',
+        ...sent, status: upstream.status, usage: sniff.usage,
       });
     }
   }
