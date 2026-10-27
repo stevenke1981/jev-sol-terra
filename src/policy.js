@@ -2,7 +2,9 @@
 // trajectory. Escalates when the agent looks stuck, decays on routine steps.
 
 export const HARD_TASK = /\b(design|architect|architecture|refactor|race|deadlock|concurren|security|vulnerab|prove|proof|optimi[sz]e|performance|migrat|why|root cause|debug|investigate)\b|設計|架構|重構|除錯|根因|為什麼|為何|優化|效能/i;
-const GREETING = /^\s*(hi|hello|hey|yo|thanks|thank you|ok|okay|你好|嗨|謝謝|好)\W*$/i;
+// Questions that ask for understanding rather than an action: Sol's other strength.
+export const DEEP_QUESTION = /\b(how (does|do|did|is|are|come)|explain (how|why)|in depth|deep dive|trade-?offs?|algorithm|complexity|analy[sz]e|analysis|compare|comparison)\b|深入|原理|分析|比較|權衡|取捨|演算法|複雜度|推導|證明|怎麼運作|如何運作|運作機制|為何會/i;
+const GREETING =/^\s*(hi|hello|hey|yo|thanks|thank you|ok|okay|你好|嗨|謝謝|好)\W*$/i;
 export const LONG_PROMPT_CHARS = 600;
 const SYNTHESIS_READS = 4;
 const REPEAT_WINDOW = 6;
@@ -16,7 +18,7 @@ export function assess(turn, ladder) {
 
   if (steps.length === 0) {
     if (GREETING.test(userText)) return { target: 0, hold: 0, reasons: ['greeting'] };
-    if (userText.length > LONG_PROMPT_CHARS || HARD_TASK.test(userText)) {
+    if (userText.length > LONG_PROMPT_CHARS || HARD_TASK.test(userText) || DEEP_QUESTION.test(userText)) {
       return { target: mid, hold: 0, reasons: ['hard task, planning'] };
     }
     return { target: 0, hold: 0, reasons: ['first step'] };

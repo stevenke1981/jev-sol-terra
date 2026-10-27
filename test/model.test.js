@@ -104,7 +104,30 @@ test('taskProfile: writing that also shows code is neutral, not terra', () => {
 });
 
 test('taskProfile: anything else is neutral', () => {
-  assert.deepEqual(taskProfile({}, turnOf('list the files in src')), { affinity: 'neutral', reasons: ['no strong signal'] });
+  assert.deepEqual(taskProfile({}, turnOf('the build looks slow today')), { affinity: 'neutral', reasons: ['no strong signal'] });
+});
+
+test('taskProfile: a deep question means sol', () => {
+  for (const q of ['How does the event loop schedule microtasks?', 'explain how the cache invalidates entries',
+    'what are the trade-offs of SQLite vs Postgres here', 'analyze the complexity of this algorithm',
+    '深入說明 React 的 reconciliation 原理', '比較 zstd 與 gzip 的取捨', '這個鎖是怎麼運作的？']) {
+    assert.deepEqual(taskProfile({}, turnOf(q)), { affinity: 'sol', reasons: ['deep question'] }, q);
+  }
+});
+
+test('taskProfile: clear instructions start on terra (neutral), including a long step list', () => {
+  for (const q of ['list the files in src', 'rename getUser to fetchUser in api.ts', 'Please add a --verbose flag to the CLI',
+    'run npm test and report', '幫我把 config.json 的 port 改成 9000', '請新增一個 .gitignore', '依照 README 安裝依賴']) {
+    assert.deepEqual(taskProfile({}, turnOf(q)), { affinity: 'neutral', reasons: ['clear instructions'] }, q);
+  }
+  const steps = ['1. bump the version in package.json', '2. update CHANGELOG.md', '3. run npm test', '4. commit as "release 1.2.0"']
+    .join('\n').concat('\n', 'Notes: '.padEnd(LONG_PROMPT_CHARS, 'x'));
+  assert.deepEqual(taskProfile({}, turnOf(steps)), { affinity: 'neutral', reasons: ['clear instructions (4 steps)'] });
+  // Two bullets are not a plan; the long prompt still goes to sol.
+  const two = `- a\n- b\n${'x'.repeat(LONG_PROMPT_CHARS)}`;
+  assert.equal(taskProfile({}, turnOf(two)).affinity, 'sol');
+  // A hard task stays on sol even when phrased as an instruction.
+  assert.equal(taskProfile({}, turnOf('refactor the auth module into services')).affinity, 'sol');
 });
 
 // ---- wantsModelRouting / modelId / clampEffort ----------------------------

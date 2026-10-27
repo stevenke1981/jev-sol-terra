@@ -1,10 +1,14 @@
 # jev-sol-terra — GPT-6.1 Terra／Sol 與 reasoning effort 路由器
 
-> 每一次 generation 都重新決定「用哪個模型」與「用多少 reasoning」。Terra 求快求省，Sol 留給硬題。
+> 每一次 generation 都重新決定「用哪個模型」與「用多少 reasoning」。
+> **Sol：困難的程式碼、深入的問題。Terra：確實執行交代的事情、computer use。**
 
 本專案衍生自 [jev](https://github.com/stevenke1981/jev)（`openrouter-jev` 分支，97b9289），沿用其 effort 路由、hysteresis 與 TypeSafe Jev 決策，並新增 **模型路由**：每次 generation 在 `gpt-6.1-terra` 與 `gpt-6.1-sol` 之間擇一，同時決定 effort。
 
-- 讀檔、列目錄、建置成功這類例行步驟 → Terra，effort `low`
+- 困難程式碼（設計、重構、除錯、並行、安全…）與深入問題（原理、分析、比較、權衡、演算法、how does…）→ Sol
+- 交代清楚的事（改名、新增、更新、安裝、執行，或列出 3 步以上的步驟）→ Terra 照做；卡住才升 Sol
+- 圖片、computer use、寫作翻譯 → Terra
+- 讀檔、列目錄、建置成功這類例行步驟 → effort `low`
 - 指令失敗、重複同一個失敗、難題、長程任務 → 升 effort，必要時改用 Sol
 - 失敗後恢復成功 → 逐級回落，不一口氣掉到底
 
@@ -78,9 +82,15 @@ codex -p jevst                   # 視窗 2：照常使用 Codex
 
 1. 本輪（最後一則真人訊息之後）含圖片（`input_image`／`image_url`）→ `terra`
 2. 提供內建 computer-use 工具（`tools` 的 type 含 `computer`），或本輪實際呼叫過名稱含 `browser`、`computer`、`screenshot`、`playwright` 的工具 → `terra`。MCP 瀏覽器工具只有本輪真的呼叫過才算，避免每個 session 都掛載時被誤判。
-3. 命中 `HARD_TASK` 或使用者文字超過 `LONG_PROMPT_CHARS` → `sol`
-4. 寫作類（write、draft、rewrite、translate、email、article、docs、readme，或 撰寫、改寫、翻譯、文章、郵件、文案、摘要）且無程式訊號 → `terra`；寫作中夾帶程式訊號 → `neutral`
-5. 其餘 → `neutral`
+3. 困難程式碼（`HARD_TASK`：design、refactor、debug、race、security、why、root cause、設計、重構、除錯、根因…）→ `sol`
+4. 深入問題（`DEEP_QUESTION`：how does、explain how/why、trade-off、algorithm、complexity、analyze、compare、深入、原理、分析、比較、權衡、取捨、演算法、推導、怎麼運作…）→ `sol`
+5. 列出 3 行以上編號或項目符號的步驟 → `neutral`（理由 `clear instructions (N steps)`）。使用者已規劃好，交給 Terra 照做，即使內容很長也一樣。
+6. 使用者文字超過 `LONG_PROMPT_CHARS`（600）→ `sol`
+7. 具體指令（以 add、rename、move、delete、update、install、run、create、set、change、list…開頭，或 請／幫我 新增、改名、刪除、更新、安裝、執行、依照…，或「把 X 改成 Y」）→ `neutral`（理由 `clear instructions`）
+8. 寫作類（write、draft、rewrite、translate、email、article、docs、readme，或 撰寫、改寫、翻譯、文章、郵件、文案、摘要）且無程式訊號 → `terra`；寫作中夾帶程式訊號 → `neutral`
+9. 其餘 → `neutral`
+
+`neutral` 先用 Terra，只有卡住時才升 Sol（見下節）；`terra` 任務（圖片、computer use、寫作）整個 turn 都留在 Terra。
 
 ### 2. 每代模型（`chooseModel`）
 
@@ -249,11 +259,12 @@ aider --openai-api-base http://127.0.0.1:8788/v1 --model openai/jev-auto
 ## 測試
 
 ```powershell
-npm test     # node --test，103 個測試；不連網路，上游以本機 http.createServer 模擬
+npm test     # node --test，106 個測試；不連網路，上游以本機 http.createServer 模擬
 ```
 
 ## 變更歷史
 
 | 版本 | 日期 | 內容 | 影響範圍 |
 |------|------|------|----------|
+| v0.2.0 | 2026-10-27 | 調整模型分工：深入問題（原理、分析、比較、權衡…）改走 Sol，effort 起始 medium；具體指令與列明步驟的長需求改由 Terra 先做，卡住才升 Sol | `src/model.js`、`src/policy.js` |
 | v0.1.0 | 2026-10-27 | 初始建立（衍生自 jev `openrouter-jev` 97b9289）：GPT-6.1 Terra／Sol 模型路由與 effort 路由、TypeSafe Jev 決策（含 `strong`）、Chat Completions 代理、加密 reasoning item 隔離、CLI（serve、install、codex、tail、stats、status、stop） | 全部 |

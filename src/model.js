@@ -1,8 +1,8 @@
-// Which model serves a generation: GPT-6.1 Terra (fast, cheap; visual reasoning,
-// computer use, writing) or GPT-6.1 Sol (hard coding, long-horizon agents).
+// Which model serves a generation: GPT-6.1 Sol for hard code and deep questions,
+// GPT-6.1 Terra for carrying out clear instructions, computer use, visuals and writing.
 // Pure functions; the router keeps the per-session state.
 import { MODEL_KEYS } from './config.js';
-import { HARD_TASK, LONG_PROMPT_CHARS } from './policy.js';
+import { HARD_TASK, DEEP_QUESTION, LONG_PROMPT_CHARS } from './policy.js';
 import { isSyntheticUserText, textOf } from './trajectory.js';
 
 const STRONG_THRESHOLD = 0.6;
@@ -13,6 +13,11 @@ const COMPUTER_TOOL_NAME = /browser|computer|screenshot|playwright/i;
 const WRITING_TASK = /\b(write|draft|rewrite|translate|email|article|docs|readme)\b|撰寫|改寫|翻譯|文章|郵件|文案|摘要/i;
 // Writing that also shows code is not a Terra job; it stays neutral.
 const CODE_SIGNAL = /```|\b(code|function|class|bug|error|exception|test|tests|compile|build|typescript|javascript|python|rust|golang|sql|api|endpoint|regex|script|repo|commit|refactor|implement)\b|\.(js|ts|tsx|jsx|py|rs|go|java|kt|cs|cpp|rb|php|swift|sh|ps1|json|ya?ml|toml)\b|[{}]|\w\(\)|;\s*\n|::|=>|程式|函式|錯誤|測試|編譯|腳本/i;
+// A concrete action the user spelled out: Terra carries it out, Sol only if it gets stuck.
+const INSTRUCTION = /^\s*(please\s+)?(add|rename|move|delete|remove|replace|update|bump|install|uninstall|run|format|lint|create|make|set|change|insert|append|commit|list|show|open|follow)\b|^\s*(請|幫我|麻煩)?\s*(新增|加上|加入|改名|重新命名|移動|刪除|移除|替換|取代|更新|升級|安裝|執行|跑|格式化|建立|設定|修改|改成|插入|列出|開啟|照著|依照|按照)|把.{1,60}?(改成|改為|換成|設為|設成|刪掉|移到)/i;
+// Three or more numbered or bulleted lines: the user already did the planning.
+const STEP_LINE = /^\s*(\d+[.)、]|[-*•])\s+\S/gm;
+const MIN_STEPS = 3;
 // Efforts a model does not offer map onto the nearest one it does.
 const EFFORT_FLOOR = { sol: { none: 'low', minimal: 'low' }, terra: { minimal: 'low' } };
 
@@ -60,7 +65,13 @@ export function taskProfile(body, turn) {
   if (currentTurnItems(body).some((it) => containsImage(it))) return profile('terra', ['images in this turn']);
   if (usesComputer(body?.tools, turn)) return profile('terra', ['computer use']);
   if (HARD_TASK.test(userText)) return profile('sol', ['hard task']);
+  if (DEEP_QUESTION.test(userText)) return profile('sol', ['deep question']);
+  // Neutral starts on terra and escalates to sol only when the turn gets stuck.
+  const steps = userText.match(STEP_LINE)?.length ?? 0;
+  if (steps >= MIN_STEPS) return profile('neutral', [`clear instructions (${steps} steps)`]);
   if (userText.length > LONG_PROMPT_CHARS) return profile('sol', [`long prompt (${userText.length} chars)`]);
+  // Before writing: "依照 README 安裝依賴" names a doc but asks for an action.
+  if (INSTRUCTION.test(userText)) return profile('neutral', ['clear instructions']);
   if (WRITING_TASK.test(userText)) {
     return CODE_SIGNAL.test(userText) ? profile('neutral', ['writing with code']) : profile('terra', ['writing task']);
   }

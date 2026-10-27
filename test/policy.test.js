@@ -134,3 +134,8 @@ test('model-routing constants are shared with the policy', () => {
   assert.ok(HARD_TASK.test('why does this race?'));
   assert.equal(LONG_PROMPT_CHARS, 600);
 });
+
+test('a deep question starts at the middle rung like a hard task', () => {
+  const a = assess({ userText: 'How does the scheduler pick the next task?', steps: [] }, ['low', 'medium', 'high', 'xhigh']);
+  assert.equal(a.target, 1);
+});
