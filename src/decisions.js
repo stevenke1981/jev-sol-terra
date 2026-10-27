@@ -81,7 +81,9 @@ export function toAssessment(answers, ladder, minConfidence) {
     hold,
     release: stuck < 0.25,
     strong: typeof strong === 'number' ? strong : null,
-    reasons: [`jev score ${effort.score.toFixed(2)} (conf ${(effort.confidence ?? 0).toFixed(2)}), stuck ${stuck.toFixed(2)}`],
+    stuck,
+    reasons: [`jev score ${effort.score.toFixed(2)} (conf ${(effort.confidence ?? 0).toFixed(2)}), stuck ${stuck.toFixed(2)}`
+      + (typeof strong === 'number' ? `, strong ${strong.toFixed(2)}` : '')],
   };
 }
 

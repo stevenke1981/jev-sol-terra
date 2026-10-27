@@ -282,3 +282,18 @@ test('router.route: an effort-only request keeps the session model for the next 
   await router.route({ model: 'gpt-5.5', input }, 's3', null);
   assert.equal(router.sessions.get('s3').model, 'sol');
 });
+
+test('chooseModel: terra still stuck after a generation at the second rung escalates to sol', () => {
+  const second = TOP - 1;
+  const terraAt = (level) => ({ model: 'terra', level, hold: 2, step: 3 });
+  const pick = (prev, over) => chooseModel(prev, { config: auto, profile: NEUTRAL, newTurn: false, top: TOP, strong: null, bodyBytes: 1000, ...over });
+  // Real Jev answers after 2 and 3 failures: score ~2 (high), stuck 0.96-0.97.
+  assert.equal(pick(terraAt(second - 1), { level: second, stuck: 0.96 }).model, 'terra');
+  const esc = pick(terraAt(second), { level: second, stuck: 0.97 });
+  assert.equal(esc.model, 'sol');
+  assert.match(esc.reasons[0], /still stuck 0\.97/);
+  assert.equal(pick(terraAt(second), { level: second, stuck: 0.89 }).model, 'terra');
+  assert.equal(pick(terraAt(second), { level: second, stuck: null }).model, 'terra');
+  const terraTask = { affinity: 'terra', reasons: ['images in this turn'] };
+  assert.equal(pick(terraAt(second), { level: second, stuck: 0.99, profile: terraTask }).model, 'terra');
+});

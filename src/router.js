@@ -15,6 +15,7 @@ function pickModel(config, { body, turn, prev, a, state, step, bodyBytes }) {
     level: state.level,
     top: config.ladder.length - 1,
     strong: a.strong ?? null,
+    stuck: a.stuck ?? null,
     bodyBytes,
   });
 }

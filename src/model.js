@@ -6,6 +6,7 @@ import { HARD_TASK, LONG_PROMPT_CHARS } from './policy.js';
 import { isSyntheticUserText, textOf } from './trajectory.js';
 
 const STRONG_THRESHOLD = 0.6;
+const STUCK_THRESHOLD = 0.9;
 const MAX_PART_DEPTH = 8;
 const IMAGE_PART_TYPES = new Set(['input_image', 'image_url']);
 const COMPUTER_TOOL_NAME = /browser|computer|screenshot|playwright/i;
@@ -94,9 +95,9 @@ export function clampEffort(key, effort) {
  * Model for the next generation.
  * @param {{model?:string}|undefined} prev previous session state
  * @param {{config:object, profile:object, newTurn:boolean, level:number, top:number,
- *          strong:number|null, bodyBytes:number}} ctx
+ *          strong:number|null, stuck:number|null, bodyBytes:number}} ctx
  *   level: effort index chosen this generation; top: ladder.length - 1;
- *   strong: probability from Jev's "strong" question, or null.
+ *   strong, stuck: probabilities from Jev's questions, or null.
  * @returns {{model:'terra'|'sol', reasons:string[]}}
  */
 export function chooseModel(prev, ctx) {
@@ -114,7 +115,7 @@ function chooseForNewTurn(prev, { config, profile: taskProfileOf, bodyBytes }) {
   return choice('terra', prev?.model === 'sol' ? [...reasons, 'downgrade within limit'] : reasons);
 }
 
-function chooseMidTurn(prev, { profile: taskProfileOf, level, top, strong }) {
+function chooseMidTurn(prev, { profile: taskProfileOf, level, top, strong, stuck }) {
   // sol stays sol for the rest of the turn so the cached prefix is kept.
   if (prev?.model === 'sol') return choice('sol', ['mid-turn: sol kept for cache']);
   // A terra-affinity task keeps terra and uses the whole effort ladder.
@@ -122,6 +123,11 @@ function chooseMidTurn(prev, { profile: taskProfileOf, level, top, strong }) {
   if (level >= top) return choice('sol', ['mid-turn: top effort rung, escalate to sol']);
   if (typeof strong === 'number' && strong >= STRONG_THRESHOLD) {
     return choice('sol', [`mid-turn: strong ${strong.toFixed(2)}, escalate to sol`]);
+  }
+  // Jev's effort score seldom reaches the top rung; still stuck after a generation at
+  // the rung below means terra had its chance (the heuristic's 3-failure escalation).
+  if (typeof stuck === 'number' && stuck >= STUCK_THRESHOLD && level >= top - 1 && (prev?.level ?? -1) >= top - 1) {
+    return choice('sol', [`mid-turn: still stuck ${stuck.toFixed(2)} at ${level === top ? 'top' : 'second'} rung, escalate to sol`]);
   }
   return choice('terra', ['mid-turn: terra']);
 }
