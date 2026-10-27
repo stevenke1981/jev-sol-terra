@@ -33,11 +33,19 @@ Jev  TERRA·LOW → SOL·XHIGH  ✓ APPLIED
 
 需求：Node.js ≥ 22.15（零依賴）、Codex CLI，或任一 Chat Completions 客戶端。
 
+新電腦從 GitHub 安裝：
+
 ```powershell
-cd D:\jev-sol-terra
-npm link                         # 取得 `jev-sol-terra` 指令（或直接 node bin/jev.js ...）
+git clone https://github.com/stevenke1981/jev-sol-terra.git
+cd jev-sol-terra                 # 一定要在這個資料夾執行 npm link
+npm link                         # 註冊全域指令 jev-sol-terra（或不 link，直接 node bin/jev.js ...）
+jev-sol-terra --version          # 確認：jev-sol-terra v0.2.x
 jev-sol-terra install            # 寫入 $CODEX_HOME/jevst.config.toml（預設 ~/.codex）
 ```
+
+更新：在 `jev-sol-terra` 資料夾執行 `git pull`，再執行 `jev-sol-terra stop` 停掉舊 proxy。`npm link` 是指向資料夾的連結，所以不必重新 link。
+
+> **找不到指令？** PowerShell 顯示「無法將 'jev-sol-terra' 字詞辨識為 Cmdlet…」，通常是在別的資料夾執行了 `npm link`。例如在原本的 [jev](https://github.com/stevenke1981/jev) 專案中執行，註冊的會是 `jev-effort`，不是 `jev-sol-terra`。請 `cd` 到本專案資料夾再執行一次 `npm link`，再用 `Get-Command jev-sol-terra` 確認。若仍找不到，請確認 `npm prefix -g`（Windows 通常是 `%APPDATA%\npm`）已加入 PATH，並重開終端機。
 
 `install` 寫入的 Codex profile：`model = "gpt-6.1-sol"`（已設定的 id，所以 proxy 會逐次路由）、`jevst` provider 指向 `http://127.0.0.1:8788/v1`、`wire_api = "responses"`。檔案若存在且不是本工具寫入的，會拒絕覆寫，需加 `--force`。
 
