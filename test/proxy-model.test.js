@@ -317,3 +317,43 @@ test('jev-auto without a reasoning field gets the model but no reasoning is adde
     h.close();
   }
 });
+
+test('the downgrade guard measures the decoded body, not the compressed one', async () => {
+  const { gzipSync } = await import('node:zlib');
+  const h = await harness();
+  try {
+    const key = { prompt_cache_key: 'big' };
+    await h.post('/v1/responses', responses('jev-auto', [user(HARD)], key));
+    // A large history compresses to well under the 64 KB limit.
+    const history = Array.from({ length: 2000 }, (_, i) => assistant(`step ${i} `.repeat(20)));
+    const big = responses('jev-auto', [user(HARD), ...history, user('list the files')], key);
+    const gz = gzipSync(JSON.stringify(big));
+    assert.ok(gz.length < h.config.downgradeMaxBytes);
+    await fetch(`http://127.0.0.1:${h.port}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' }, body: gz,
+    }).then((r) => r.text());
+    assert.equal(h.seen[1].body.model, SOL);
+    assert.match(h.logged[1].modelReasons[0], /over downgrade limit/);
+  } finally {
+    h.close();
+  }
+});
+
+test('llm mode judges an aliased request on terra, not on the alias', async () => {
+  const judged = [];
+  const judgeFn = async (turn, opts) => {
+    judged.push(opts.model);
+    return { target: 0, hold: 0, reasons: ['judge: ok'] };
+  };
+  const h = await harness({ env: { JEV_MODE: 'llm' }, deps: { judgeFn } });
+  try {
+    const first = [user(SIMPLE)];
+    const call = { type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{"cmd":"ls"}' };
+    const out = { type: 'function_call_output', call_id: 'c1', output: 'Exit code: 0\na.txt' };
+    await h.post('/v1/responses', responses('jev-auto', [...first, call, out], { prompt_cache_key: 'j' }));
+    await h.post('/v1/responses', responses('gpt-x', [...first, call, out], { prompt_cache_key: 'k' }));
+    assert.deepEqual(judged, [TERRA, 'gpt-x']);
+  } finally {
+    h.close();
+  }
+});

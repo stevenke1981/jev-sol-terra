@@ -32,7 +32,8 @@ export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } =
   /**
    * @param {object} body Responses or Chat Completions request body
    * @param {string} sessionKey
-   * @param {{url:string, headers:Record<string,string>}|null} judgeTarget
+   * @param {{url:string, headers:Record<string,string>, model?:string}|null} judgeTarget model: what
+   *   the judge runs on when JEV_JUDGE_MODEL is unset (the proxy resolves aliases)
    * @param {object} [turn] parsed trajectory; defaults to the Responses `input`
    * @param {{routeModel?:boolean, bodyBytes?:number}} [options] routeModel: the client
    *   handed the model choice to us; bodyBytes: size of the request body
@@ -70,7 +71,7 @@ export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } =
       try {
         a = await judgeFn(turn, {
           ...judgeTarget,
-          model: config.judgeModel || body.model,
+          model: config.judgeModel || judgeTarget.model || body.model,
           effort: config.judgeEffort,
           timeoutMs: config.judgeTimeoutMs,
           ladder,

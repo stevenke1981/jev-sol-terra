@@ -45,7 +45,8 @@ function currentTurnItems(body) {
 // this turn actually calls one.
 function usesComputer(tools, turn) {
   const offered = Array.isArray(tools) && tools.some((t) => typeof t?.type === 'string' && /computer/.test(t.type));
-  return offered || (turn?.steps ?? []).some((s) => COMPUTER_TOOL_NAME.test(String(s.command).split(/\s/, 1)[0]));
+  // Only named tool calls: a shell step like `playwright test` is an E2E run, not computer use.
+  return offered || (turn?.steps ?? []).some((s) => s.kind === 'tool' && COMPUTER_TOOL_NAME.test(String(s.command).split(/\s/, 1)[0]));
 }
 
 /**

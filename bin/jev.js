@@ -254,7 +254,8 @@ function rankEffort(effort) {
 function groupByModelEffort(rows, config) {
   const groups = new Map();
   for (const r of rows) {
-    const model = modelLabel(r.model, config);
+    // modelKey is what the proxy routed; ids alone depend on the env at stats time.
+    const model = r.modelKey ?? modelLabel(r.model, config);
     const effort = r.effort ?? '-';
     const key = `${model}/${effort}`;
     const g = groups.get(key) ?? { model, effort, gens: 0, reasoning: 0, output: 0 };

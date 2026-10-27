@@ -297,3 +297,8 @@ test('chooseModel: terra still stuck after a generation at the second rung escal
   const terraTask = { affinity: 'terra', reasons: ['images in this turn'] };
   assert.equal(pick(terraAt(second), { level: second, stuck: 0.99, profile: terraTask }).model, 'terra');
 });
+
+test('taskProfile: a shell step named like a browser tool is not computer use', () => {
+  const turn = { ...turnOf('fix the login form'), steps: [{ kind: 'verify', command: 'playwright test', failed: true }] };
+  assert.equal(taskProfile({}, turn).affinity, 'neutral');
+});

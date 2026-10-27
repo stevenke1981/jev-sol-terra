@@ -223,10 +223,10 @@ export function createProxy(config, deps = {}) {
   const identity = { app: APP, version: VERSION, build: BUILD, pid: process.pid, startedAt: new Date().toISOString() };
 
   // Model and effort for this generation, or null when the request is left alone.
-  async function decide(protocol, body, raw, { session, judgeTarget, applyEffort, routeModel }) {
+  async function decide(protocol, body, plain, { session, judgeTarget, applyEffort, routeModel }) {
     if (config.mode === 'off') return routeModel ? offModeModel(config) : null;
     if (!applyEffort && !routeModel) return null;
-    return router.route(body, session, judgeTarget, protocol.parse(body), { routeModel, bodyBytes: raw.length });
+    return router.route(body, session, judgeTarget, protocol.parse(body), { routeModel, bodyBytes: plain.length });
   }
 
   // Applies the decision to a copy of the request: the effort when it is applied, then the
@@ -249,8 +249,11 @@ export function createProxy(config, deps = {}) {
     const base = upstreamBase(config, req.headers);
     const url = upstreamUrl(base, req.url);
     let body;
+    let plain;
     try {
-      body = JSON.parse(decode(raw, req.headers['content-encoding']).toString('utf8'));
+      // Codex compresses with zstd; the downgrade guard needs the decoded size.
+      plain = decode(raw, req.headers['content-encoding']);
+      body = JSON.parse(plain.toString('utf8'));
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('expected a JSON object');
     } catch (err) {
       res.writeHead(400, { 'content-type': 'application/json' });
@@ -263,10 +266,11 @@ export function createProxy(config, deps = {}) {
     // OpenRouter drops reasoning params a model lacks, so chat requests there are routed even without one.
     const inject = protocol === PROTOCOLS.chat && openRouter;
     const applyEffort = config.mode !== 'off' && (protocol.wantsReasoning(body) || inject);
-    const judgeTarget = protocol.judge ? { url, headers: forwardHeaders(req.headers) } : null;
-    const decision = await decide(protocol, body, raw, {
-      session, judgeTarget, applyEffort, routeModel: wantsModelRouting(body, config),
-    });
+    const routeModel = wantsModelRouting(body, config);
+    // An alias like jev-auto is not a real model, so the judge runs on the cheap one.
+    const judgeModel = routeModel ? modelId('terra', config, openRouter) : body.model;
+    const judgeTarget = protocol.judge ? { url, headers: forwardHeaders(req.headers), model: judgeModel } : null;
+    const decision = await decide(protocol, body, plain, { session, judgeTarget, applyEffort, routeModel });
     if (decision) body = rewriteRequest(protocol, body, decision, { applyEffort, inject, openRouter });
 
     const upstreamModel = body.model;
