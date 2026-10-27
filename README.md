@@ -82,7 +82,24 @@ codex -p jevst                   # 視窗 2：照常使用 Codex
 
 **憑證：** proxy 只依標頭判斷上游，不寫入憑證到記錄。上游選擇順序：`JEV_UPSTREAM` 強制指定；ChatGPT 登入（JWT 或 `chatgpt-account-id`）→ `chatgpt.com/backend-api/codex`；`sk-or-` 金鑰 → `openrouter.ai/api/v1`；其他 → `api.openai.com/v1`。
 
-## 模型路由規則
+## 平行代理模式（預設，`JEV_AGENTS=parallel`）
+
+Codex 的 multi-agent 功能（`multi_agent`，預設開啟）可以讓主代理派出多個平行子代理。proxy 依請求 header 分辨角色：
+
+| 角色 | 判斷方式 | 起始 | 之後 |
+|---|---|---|---|
+| 主代理（規劃、困難判斷） | 沒有子代理 header | **Sol·LOW** | 一直留在 Sol；卡住時 effort 逐級升到 xhigh |
+| 子代理（執行交代的工作） | `x-codex-parent-thread-id` 或 `x-openai-subagent`（`thread_spawn`、`compact`、`review`…） | **Terra·LOW** | 卡住時先升 effort，再依「卡住升 Sol」規則換成 Sol；computer use、圖片、寫作類整輪留在 Terra |
+
+- 每個代理有自己的 `prompt_cache_key`，因此各自獨立追蹤、獨立升降，互不影響。
+- 兩種角色都從 low 開始（單一代理模式下困難任務會從 medium 開始），之後才依情況加 effort。
+- 其他客戶端（opencode、自製 agent）可在請求加上 header `x-jev-role: main` 或 `x-jev-role: worker` 指定角色。這個 header 不會轉送給上游。
+- `JEV_MODEL=terra|sol` 仍優先：會固定模型，不看角色。
+- `JEV_AGENTS=single`：回到 v0.2 的行為，不看角色、只依任務內容挑模型（見下節）。
+- 沒有子代理 header 的 Chat Completions 客戶端，每個請求都算主代理，因此一律走 Sol。只想讓這類客戶端依任務挑模型的話，請用 `JEV_AGENTS=single`。
+- decisions log 多一個 `role` 欄位（`main`／`worker`）。
+
+## 模型路由規則（`JEV_AGENTS=single`；平行模式的子代理也沿用其中「卡住升 Sol」的部分）
 
 路由分兩層：先判斷任務特徵（`taskProfile`），再決定本代用哪個模型（`chooseModel`）。
 
@@ -162,7 +179,15 @@ TERRA·LOW → TERRA·MEDIUM (stuck 0.37) → TERRA·HIGH (stuck 0.96) → SOL·
 
 Jev 每次決策延遲 548–765 ms。
 
-Responses API（OpenRouter）：同一 session 先問 "What is 17*23?" → TERRA·LOW，再問死鎖根因 → SOL·LOW，模型跨輪切換後回應正常。
+Responses API（OpenRouter）：同一 session 先問 "What is 17*23?" → TERRA·LOW，再問死鎖根因 → SOL·LOW，模型跨輪切換後回應正常。（上述為 `JEV_AGENTS=single` 時期的結果。）
+
+平行代理模式（v0.3.0，Responses API，三個請求同時送出）：
+
+| 代理 | 請求 | 結果 |
+|---|---|---|
+| 主代理 | 規劃如何把重構拆成兩個平行任務（Jev 分數 0.85，原本會是 medium） | SOL·LOW（main starts low） |
+| 子代理 1（`thread_spawn`） | 把變數 cnt 改名為 count | TERRA·LOW |
+| 子代理 2（`thread_spawn`） | 死鎖原因（單一模式下會走 Sol） | TERRA·LOW，答案正確 |
 
 ## Chat Completions 客戶端
 
@@ -267,12 +292,13 @@ aider --openai-api-base http://127.0.0.1:8788/v1 --model openai/jev-auto
 ## 測試
 
 ```powershell
-npm test     # node --test，106 個測試；不連網路，上游以本機 http.createServer 模擬
+npm test     # node --test，113 個測試；不連網路，上游以本機 http.createServer 模擬
 ```
 
 ## 變更歷史
 
 | 版本 | 日期 | 內容 | 影響範圍 |
 |------|------|------|----------|
+| v0.3.0 | 2026-10-27 | 平行代理模式（預設）：主代理 Sol·LOW 起步，Codex 子代理（`x-codex-parent-thread-id`／`x-openai-subagent`）Terra·LOW 起步、卡住才升 Sol；`x-jev-role` header；`JEV_AGENTS=single` 恢復 v0.2 行為；log 新增 `role` | `src/model.js`、`src/router.js`、`src/proxy.js`、`src/config.js` |
 | v0.2.0 | 2026-10-27 | 調整模型分工：深入問題（原理、分析、比較、權衡…）改走 Sol，effort 起始 medium；具體指令與列明步驟的長需求改由 Terra 先做，卡住才升 Sol | `src/model.js`、`src/policy.js` |
 | v0.1.0 | 2026-10-27 | 初始建立（衍生自 jev `openrouter-jev` 97b9289）：GPT-6.1 Terra／Sol 模型路由與 effort 路由、TypeSafe Jev 決策（含 `strong`）、Chat Completions 代理、加密 reasoning item 隔離、CLI（serve、install、codex、tail、stats、status、stop） | 全部 |

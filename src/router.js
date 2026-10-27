@@ -7,7 +7,7 @@ import { taskProfile, chooseModel } from './model.js';
 
 const MAX_SESSIONS = 500;
 
-function pickModel(config, { body, turn, prev, a, state, step, bodyBytes }) {
+function pickModel(config, { body, turn, prev, a, state, step, bodyBytes, role }) {
   return chooseModel(prev, {
     config,
     profile: taskProfile(body, turn),
@@ -16,6 +16,7 @@ function pickModel(config, { body, turn, prev, a, state, step, bodyBytes }) {
     top: config.ladder.length - 1,
     strong: a.strong ?? null,
     stuck: a.stuck ?? null,
+    role,
     bodyBytes,
   });
 }
@@ -35,12 +36,13 @@ export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } =
    * @param {{url:string, headers:Record<string,string>, model?:string}|null} judgeTarget model: what
    *   the judge runs on when JEV_JUDGE_MODEL is unset (the proxy resolves aliases)
    * @param {object} [turn] parsed trajectory; defaults to the Responses `input`
-   * @param {{routeModel?:boolean, bodyBytes?:number}} [options] routeModel: the client
-   *   handed the model choice to us; bodyBytes: size of the request body
+   * @param {{routeModel?:boolean, bodyBytes?:number, role?:'main'|'worker'|null}} [options] routeModel: the
+   *   client handed the model choice to us; bodyBytes: size of the request body; role: the
+   *   agent in parallel-agents mode, whose turns start at the lowest effort rung
    * @returns {Promise<{effort:string, from:string|null, step:number, hold:number, reasons:string[], source:string,
    *   cost:number|null, ms:number, model:'terra'|'sol'|null, fromModel:string|null, modelReasons:string[]}>}
    */
-  async function route(body, sessionKey, judgeTarget, turn = parseTurn(body.input), { routeModel = false, bodyBytes = 0 } = {}) {
+  async function route(body, sessionKey, judgeTarget, turn = parseTurn(body.input), { routeModel = false, bodyBytes = 0, role = null } = {}) {
     const started = performance.now();
     const step = turn.steps.length + 1;
     const ladder = config.ladder;
@@ -82,8 +84,12 @@ export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } =
       }
     }
 
+    if (role && isNewTurn(prev, step)) {
+      // Parallel agents start low and earn more effort by getting stuck.
+      a = { ...a, target: 0, hold: 0, reasons: [...a.reasons, `${role} starts low`] };
+    }
     const state = nextState(prev, a, step);
-    const model = routeModel ? pickModel(config, { body, turn, prev, a, state, step, bodyBytes }) : null;
+    const model = routeModel ? pickModel(config, { body, turn, prev, a, state, step, bodyBytes, role }) : null;
     const fromModel = model && !isNewTurn(prev, step) && prev?.model && prev.model !== model.model ? prev.model : null;
     // Effort-only requests keep the session's last routed model for the next routed one.
     remember(sessionKey, { ...state, model: model?.model ?? prev?.model ?? null });

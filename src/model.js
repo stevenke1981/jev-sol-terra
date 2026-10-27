@@ -104,17 +104,40 @@ export function clampEffort(key, effort) {
 }
 
 /**
+ * Which agent sent the request. Codex marks the requests of a spawned subagent with
+ * x-codex-parent-thread-id and x-openai-subagent (thread_spawn, compact, review...);
+ * other clients can say so with x-jev-role.
+ * @returns {'main'|'worker'}
+ */
+export function agentRole(headers) {
+  const explicit = String(headers['x-jev-role'] ?? '').trim().toLowerCase();
+  if (explicit === 'main' || explicit === 'worker') return explicit;
+  return headers['x-codex-parent-thread-id'] || headers['x-openai-subagent'] ? 'worker' : 'main';
+}
+
+/**
  * Model for the next generation.
  * @param {{model?:string}|undefined} prev previous session state
  * @param {{config:object, profile:object, newTurn:boolean, level:number, top:number,
- *          strong:number|null, stuck:number|null, bodyBytes:number}} ctx
+ *          strong:number|null, stuck:number|null, bodyBytes:number, role?:'main'|'worker'|null}} ctx
  *   level: effort index chosen this generation; top: ladder.length - 1;
- *   strong, stuck: probabilities from Jev's questions, or null.
+ *   strong, stuck: probabilities from Jev's questions, or null;
+ *   role: set in parallel-agents mode.
  * @returns {{model:'terra'|'sol', reasons:string[]}}
  */
 export function chooseModel(prev, ctx) {
   if (ctx.config.modelMode !== 'auto') return choice(ctx.config.modelMode, ['pinned']);
+  if (ctx.role === 'main') return choice('sol', ['main agent on sol']);
+  if (ctx.role === 'worker') return chooseForWorker(prev, ctx);
   return ctx.newTurn ? chooseForNewTurn(prev, ctx) : chooseMidTurn(prev, ctx);
+}
+
+// A subagent carries out what the main agent handed it: terra first, sol only once it is
+// stuck. Computer use, images and writing keep terra for the whole turn.
+function chooseForWorker(prev, ctx) {
+  if (ctx.newTurn) return choice('terra', ['subagent on terra']);
+  const affinity = ctx.profile.affinity === 'terra' ? 'terra' : 'neutral';
+  return chooseMidTurn(prev, { ...ctx, profile: profile(affinity, ctx.profile.reasons) });
 }
 
 function chooseForNewTurn(prev, { config, profile: taskProfileOf, bodyBytes }) {

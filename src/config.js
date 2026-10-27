@@ -33,8 +33,13 @@ export function loadConfig(env = process.env) {
   if (!(minConfidence >= 0 && minConfidence <= 1)) throw new Error(`JEV_MIN_CONFIDENCE must be 0..1; got "${env.JEV_MIN_CONFIDENCE}"`);
   const modelMode = (env.JEV_MODEL || 'auto').toLowerCase();
   if (!MODEL_MODES.includes(modelMode)) throw new Error(`JEV_MODEL must be ${MODEL_MODES.join('|')}; got "${modelMode}"`);
+  const agents = (env.JEV_AGENTS || 'parallel').toLowerCase();
+  if (!['parallel', 'single'].includes(agents)) throw new Error(`JEV_AGENTS must be parallel|single; got "${agents}"`);
   return Object.freeze({
     host: env.JEV_HOST || '127.0.0.1',
+    // parallel: the main agent runs on sol and spawned subagents on terra, both from low;
+    // single: every request is routed by its task alone.
+    agents,
     port: intEnv(env, 'JEV_PORT', 8788),
     ladder: parseLadder(env.JEV_LEVELS || 'low,medium,high,xhigh'),
     // auto: route per task between the two models; terra|sol: pin one model, route effort only.

@@ -160,3 +160,15 @@ test('config rejects invalid ladders and modes', () => {
   assert.throws(() => loadConfig({ JEV_LEVELS: 'low,turbo' }), /JEV_LEVELS/);
   assert.throws(() => loadConfig({ JEV_MODE: 'smart' }), /JEV_MODE/);
 });
+
+test('the x-jev-role hint is not forwarded upstream', async () => {
+  const h = await harness();
+  try {
+    await fetch(`http://127.0.0.1:${h.port}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-jev-role': 'worker' }, body: JSON.stringify(request([user('hi')])),
+    }).then((r) => r.text());
+    assert.equal(h.seen[0].headers['x-jev-role'], undefined);
+  } finally {
+    h.close();
+  }
+});

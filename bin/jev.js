@@ -28,6 +28,7 @@ Usage:
 
 Environment:
   JEV_PORT (8788)  JEV_MODEL (auto|terra|sol)  JEV_TERRA_MODEL (gpt-6.1-terra)  JEV_SOL_MODEL (gpt-6.1-sol)
+  JEV_AGENTS (parallel|single: main agent on sol, subagents on terra, both from low)
   JEV_DOWNGRADE_MAX_KB (64)  JEV_LEVELS (low,medium,high,xhigh)  JEV_MODE (jev|heuristic|llm|off)
   JEV_JUDGE_MODEL  JEV_UPSTREAM  JEV_HOME (~/.jev-sol-terra)  JEV_QUIET=1`;
 

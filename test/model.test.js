@@ -325,3 +325,19 @@ test('taskProfile: a shell step named like a browser tool is not computer use', 
   const turn = { ...turnOf('fix the login form'), steps: [{ kind: 'verify', command: 'playwright test', failed: true }] };
   assert.equal(taskProfile({}, turn).affinity, 'neutral');
 });
+
+test('agentRole: Codex subagent headers and x-jev-role', async () => {
+  const { agentRole } = await import('../src/model.js');
+  assert.equal(agentRole({}), 'main');
+  assert.equal(agentRole({ 'x-codex-parent-thread-id': 't1' }), 'worker');
+  assert.equal(agentRole({ 'x-openai-subagent': 'compact' }), 'worker');
+  assert.equal(agentRole({ 'x-jev-role': 'Main', 'x-openai-subagent': 'thread_spawn' }), 'main');
+  assert.equal(agentRole({ 'x-jev-role': 'worker' }), 'worker');
+  assert.equal(agentRole({ 'x-jev-role': 'boss' }), 'main');
+});
+
+test('loadConfig: JEV_AGENTS defaults to parallel and rejects unknown values', () => {
+  assert.equal(loadConfig({}).agents, 'parallel');
+  assert.equal(loadConfig({ JEV_AGENTS: 'Single' }).agents, 'single');
+  assert.throws(() => loadConfig({ JEV_AGENTS: 'swarm' }), /JEV_AGENTS/);
+});

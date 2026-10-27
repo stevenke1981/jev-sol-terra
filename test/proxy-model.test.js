@@ -44,13 +44,14 @@ async function harness({ env = {}, deps = {}, reply = perModelReply } = {}) {
   const upPort = await listen(upstream);
   const logged = [];
   const printed = [];
-  const config = loadConfig({ JEV_UPSTREAM: `http://127.0.0.1:${upPort}/base`, JEV_HOME: '.jev-test', ...env });
+  // Task-based routing is tested in single-agent mode; parallel mode has its own tests.
+  const config = loadConfig({ JEV_UPSTREAM: `http://127.0.0.1:${upPort}/base`, JEV_HOME: '.jev-test', JEV_AGENTS: 'single', ...env });
   const { server, stats } = createProxy(config, {
     log: { write: (r) => logged.push(r) }, print: (s) => printed.push(s), ...deps,
   });
   const port = await listen(server);
-  const post = (path, body) => fetch(`http://127.0.0.1:${port}${path}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  const post = (path, body, headers = {}) => fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
   }).then((r) => r.text());
   const close = () => {
     server.close();
@@ -355,5 +356,73 @@ test('llm mode judges an aliased request on terra, not on the alias', async () =
     assert.deepEqual(judged, [TERRA, 'gpt-x']);
   } finally {
     h.close();
+  }
+});
+
+// ---- parallel agents --------------------------------------------------------
+
+const PARALLEL = { JEV_AGENTS: 'parallel' };
+const SUBAGENT = { 'x-codex-parent-thread-id': 'thread-main', 'x-openai-subagent': 'thread_spawn' };
+const fail = (id, cmd) => [
+  { type: 'function_call', call_id: id, name: 'shell', arguments: JSON.stringify({ cmd }) },
+  { type: 'function_call_output', call_id: id, output: 'Exit code: 1\nAssertionError: boom' },
+];
+
+test('parallel: the main agent runs on sol and a subagent on terra, both from low', async () => {
+  const h = await harness({ env: PARALLEL });
+  try {
+    // A hard task would start at medium in single mode; parallel agents start low.
+    await h.post('/v1/responses', responses('jev-auto', [user(HARD)], { prompt_cache_key: 'main' }));
+    await h.post('/v1/responses', responses('jev-auto', [user(HARD)], { prompt_cache_key: 'sub' }), SUBAGENT);
+    await h.post('/v1/responses', responses('jev-auto', [user(SIMPLE)], { prompt_cache_key: 'main2' }));
+
+    assert.deepEqual(h.seen.map((s) => [s.body.model, s.body.reasoning.effort]), [[SOL, 'low'], [TERRA, 'low'], [SOL, 'low']]);
+    assert.deepEqual(h.logged.map((r) => r.role), ['main', 'worker', 'main']);
+    assert.match(h.logged[1].modelReasons.join(), /subagent on terra/);
+  } finally {
+    h.close();
+  }
+});
+
+test('parallel: a stuck subagent climbs the effort ladder and then moves to sol', async () => {
+  const h = await harness({ env: PARALLEL });
+  try {
+    const turn = [user('add a --verbose flag to the CLI')];
+    const sent = [];
+    for (let i = 0; i <= 3; i++) {
+      await h.post('/v1/responses', responses('jev-auto', turn, { prompt_cache_key: 'sub-stuck' }), SUBAGENT);
+      sent.push(`${h.seen.at(-1).body.model === SOL ? 'sol' : 'terra'}/${h.seen.at(-1).body.reasoning.effort}`);
+      turn.push(...fail(`c${i}`, 'npm test'));
+    }
+    assert.equal(sent[0], 'terra/low');
+    assert.equal(sent.at(-1), 'sol/xhigh');
+  } finally {
+    h.close();
+  }
+});
+
+test('parallel: x-jev-role marks agents for other clients', async () => {
+  const h = await harness({ env: PARALLEL });
+  try {
+    await h.post('/v1/chat/completions', { model: 'jev-auto', user: 'oc-sub', messages: [{ role: 'user', content: HARD }] }, { 'x-jev-role': 'worker' });
+    assert.equal(h.seen[0].body.model, TERRA);
+    assert.equal(h.logged[0].role, 'worker');
+  } finally {
+    h.close();
+  }
+});
+
+test('parallel: JEV_MODEL pins over the roles and JEV_AGENTS=single ignores them', async () => {
+  const pinned = await harness({ env: { ...PARALLEL, JEV_MODEL: 'terra' } });
+  const single = await harness({ env: { JEV_AGENTS: 'single' } });
+  try {
+    await pinned.post('/v1/responses', responses('jev-auto', [user(HARD)], { prompt_cache_key: 'p' }));
+    await single.post('/v1/responses', responses('jev-auto', [user(HARD)], { prompt_cache_key: 's' }), SUBAGENT);
+    assert.equal(pinned.seen[0].body.model, TERRA);
+    assert.equal(single.seen[0].body.model, SOL);
+    assert.equal(single.logged[0].role, undefined);
+  } finally {
+    pinned.close();
+    single.close();
   }
 });

@@ -1,6 +1,6 @@
 {
   "name": "jev-sol-terra",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Routes each generation between GPT-6.1 Terra and GPT-6.1 Sol and picks the reasoning effort (low..xhigh) mid-task.",
   "type": "module",
   "bin": {

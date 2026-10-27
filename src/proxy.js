@@ -7,12 +7,14 @@ import { createRouter } from './router.js';
 import { parseTurn } from './trajectory.js';
 import { parseChatTurn, chatWantsReasoning, applyChatEffort, chatSessionKey } from './chat.js';
 import { createDecisionLog, formatDecision, usageTokens } from './log.js';
-import { wantsModelRouting, modelId, clampEffort } from './model.js';
+import { wantsModelRouting, modelId, clampEffort, agentRole } from './model.js';
 import { createReasoningTracker } from './reasoning.js';
 import { VERSION, BUILD, APP } from './version.js';
 
 const HOP_BY_HOP = new Set(['host', 'connection', 'keep-alive', 'transfer-encoding', 'content-length',
-  'content-encoding', 'accept-encoding', 'proxy-connection', 'upgrade', 'te', 'trailer']);
+  'content-encoding', 'accept-encoding', 'proxy-connection', 'upgrade', 'te', 'trailer',
+  // Our own role hint; the upstream has no use for it.
+  'x-jev-role']);
 const DECODERS = {
   zstd: (b) => zlib.zstdDecompressSync(b),
   gzip: (b) => zlib.gunzipSync(b),
@@ -223,10 +225,10 @@ export function createProxy(config, deps = {}) {
   const identity = { app: APP, version: VERSION, build: BUILD, pid: process.pid, startedAt: new Date().toISOString() };
 
   // Model and effort for this generation, or null when the request is left alone.
-  async function decide(protocol, body, plain, { session, judgeTarget, applyEffort, routeModel }) {
+  async function decide(protocol, body, plain, { session, judgeTarget, applyEffort, routeModel, role }) {
     if (config.mode === 'off') return routeModel ? offModeModel(config) : null;
     if (!applyEffort && !routeModel) return null;
-    return router.route(body, session, judgeTarget, protocol.parse(body), { routeModel, bodyBytes: plain.length });
+    return router.route(body, session, judgeTarget, protocol.parse(body), { routeModel, bodyBytes: plain.length, role });
   }
 
   // Applies the decision to a copy of the request: the effort when it is applied, then the
@@ -270,7 +272,8 @@ export function createProxy(config, deps = {}) {
     // An alias like jev-auto is not a real model, so the judge runs on the cheap one.
     const judgeModel = routeModel ? modelId('terra', config, openRouter) : body.model;
     const judgeTarget = protocol.judge ? { url, headers: forwardHeaders(req.headers), model: judgeModel } : null;
-    const decision = await decide(protocol, body, plain, { session, judgeTarget, applyEffort, routeModel });
+    const role = routeModel && config.agents === 'parallel' ? agentRole(req.headers) : null;
+    const decision = await decide(protocol, body, plain, { session, judgeTarget, applyEffort, routeModel, role });
     if (decision) body = rewriteRequest(protocol, body, decision, { applyEffort, inject, openRouter });
 
     const upstreamModel = body.model;
@@ -298,7 +301,7 @@ export function createProxy(config, deps = {}) {
       }
       log.write({
         ts: new Date().toISOString(), session, api: protocol === PROTOCOLS.chat ? 'chat' : 'responses',
-        ...sent, status: upstream.status, usage: sniff.usage,
+        ...sent, ...(role ? { role } : {}), status: upstream.status, usage: sniff.usage,
       });
     }
   }
