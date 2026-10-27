@@ -51,6 +51,14 @@ export function buildQuestions(ladder) {
         false: 'The agent is making progress, or its last step succeeded.',
       },
     },
+    strong: {
+      type: 'noul',
+      instructions: 'Does the NEXT generation need the strongest, most expensive coding model?',
+      criteria: {
+        true: 'Hard coding or long-horizon work: deep debugging, architecture, a subtle multi-file change, a long agentic task.',
+        false: 'Routine work a cheaper model handles well: reading, simple edits, commands, prose.',
+      },
+    },
   };
 }
 
@@ -58,6 +66,8 @@ export function buildQuestions(ladder) {
 export function toAssessment(answers, ladder, minConfidence) {
   const effort = answers?.effort;
   const stuck = answers?.stuck?.noul;
+  // Optional: an answer set without the model question still routes effort.
+  const strong = answers?.strong?.noul;
   if (effort?.type !== 'score' || typeof effort.score !== 'number' || typeof stuck !== 'number') {
     throw new Error('Jev returned an unexpected answer shape');
   }
@@ -70,6 +80,7 @@ export function toAssessment(answers, ladder, minConfidence) {
     target,
     hold,
     release: stuck < 0.25,
+    strong: typeof strong === 'number' ? strong : null,
     reasons: [`jev score ${effort.score.toFixed(2)} (conf ${(effort.confidence ?? 0).toFixed(2)}), stuck ${stuck.toFixed(2)}`],
   };
 }
@@ -77,7 +88,7 @@ export function toAssessment(answers, ladder, minConfidence) {
 /**
  * @param {{url:string, apiKey:string, model:string, timeoutMs:number, ladder:string[],
  *          minConfidence:number, sessionId?:string, currentEffort?:string}} opts
- * @returns {Promise<{target:number, hold:number, release:boolean, reasons:string[], cost:number|null}>}
+ * @returns {Promise<{target:number, hold:number, release:boolean, strong:number|null, reasons:string[], cost:number|null}>}
  */
 export async function jevDecide(turn, opts) {
   const res = await fetch(opts.url, {

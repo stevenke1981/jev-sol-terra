@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseTurn, outputFailed, classifyCall } from '../src/trajectory.js';
-import { assess, nextState } from '../src/policy.js';
+import { assess, nextState, isNewTurn, HARD_TASK, LONG_PROMPT_CHARS } from '../src/policy.js';
 
 const LADDER = ['low', 'medium', 'high'];
 const user = (text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
@@ -120,4 +120,17 @@ test('hysteresis: holds after escalation, then decays one rung at a time', () =>
 test('a new turn resets state instead of decaying', () => {
   const high = { level: 2, hold: 2, step: 9 };
   assert.equal(nextState(high, { target: 0, hold: 0, reasons: [] }, 1).level, 0);
+});
+
+test('isNewTurn: first generation, step restart, or no state; continuing steps are one turn', () => {
+  assert.equal(isNewTurn(undefined, 5), true);
+  assert.equal(isNewTurn({ step: 4 }, 1), true);
+  assert.equal(isNewTurn({ step: 4 }, 3), true);
+  assert.equal(isNewTurn({ step: 4 }, 4), false);
+  assert.equal(isNewTurn({ step: 4 }, 5), false);
+});
+
+test('model-routing constants are shared with the policy', () => {
+  assert.ok(HARD_TASK.test('why does this race?'));
+  assert.equal(LONG_PROMPT_CHARS, 600);
 });

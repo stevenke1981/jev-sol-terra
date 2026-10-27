@@ -1,9 +1,9 @@
 // Decides the reasoning effort for the next generation from the current turn's
 // trajectory. Escalates when the agent looks stuck, decays on routine steps.
 
-const HARD_TASK = /\b(design|architect|architecture|refactor|race|deadlock|concurren|security|vulnerab|prove|proof|optimi[sz]e|performance|migrat|why|root cause|debug|investigate)\b|設計|架構|重構|除錯|根因|為什麼|為何|優化|效能/i;
+export const HARD_TASK = /\b(design|architect|architecture|refactor|race|deadlock|concurren|security|vulnerab|prove|proof|optimi[sz]e|performance|migrat|why|root cause|debug|investigate)\b|設計|架構|重構|除錯|根因|為什麼|為何|優化|效能/i;
 const GREETING = /^\s*(hi|hello|hey|yo|thanks|thank you|ok|okay|你好|嗨|謝謝|好)\W*$/i;
-const LONG_PROMPT_CHARS = 600;
+export const LONG_PROMPT_CHARS = 600;
 const SYNTHESIS_READS = 4;
 const REPEAT_WINDOW = 6;
 
@@ -70,6 +70,16 @@ function countSinceLast(steps, kind, pred) {
 }
 
 /**
+ * True when generation `step` starts a new user turn rather than continuing the previous one.
+ * Shared by effort hysteresis and model routing so both reset at the same point.
+ * @param {{step:number}|undefined} prev session state
+ * @param {number} step 1-based generation index
+ */
+export function isNewTurn(prev, step) {
+  return !prev || step <= 1 || step <= prev.step - 1;
+}
+
+/**
  * Applies hysteresis on top of the raw assessment.
  * @param {{level:number, hold:number, step:number}|undefined} prev session state
  * @param {{target:number, hold:number, reasons:string[]}} a assessment
@@ -77,8 +87,7 @@ function countSinceLast(steps, kind, pred) {
  * @returns {{level:number, hold:number, step:number, from:number|null, reasons:string[]}}
  */
 export function nextState(prev, a, step) {
-  const newTurn = !prev || step <= 1 || step <= prev.step - 1;
-  if (newTurn) return { level: a.target, hold: a.hold, step, from: null, reasons: a.reasons };
+  if (isNewTurn(prev, step)) return { level: a.target, hold: a.hold, step, from: null, reasons: a.reasons };
 
   if (a.target > prev.level) {
     return { level: a.target, hold: a.hold, step, from: prev.level, reasons: a.reasons };

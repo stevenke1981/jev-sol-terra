@@ -1,10 +1,23 @@
 // Per-session effort routing: trajectory -> assessment (heuristic or judge) -> hysteresis.
 import { parseTurn } from './trajectory.js';
-import { assess, nextState } from './policy.js';
+import { assess, nextState, isNewTurn } from './policy.js';
 import { judge } from './judge.js';
 import { jevDecide } from './decisions.js';
+import { taskProfile, chooseModel } from './model.js';
 
 const MAX_SESSIONS = 500;
+
+function pickModel(config, { body, turn, prev, a, state, step, bodyBytes }) {
+  return chooseModel(prev, {
+    config,
+    profile: taskProfile(body, turn),
+    newTurn: isNewTurn(prev, step),
+    level: state.level,
+    top: config.ladder.length - 1,
+    strong: a.strong ?? null,
+    bodyBytes,
+  });
+}
 
 export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } = {}) {
   const sessions = new Map();
@@ -20,9 +33,12 @@ export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } =
    * @param {string} sessionKey
    * @param {{url:string, headers:Record<string,string>}|null} judgeTarget
    * @param {object} [turn] parsed trajectory; defaults to the Responses `input`
-   * @returns {Promise<{effort:string, from:string|null, step:number, hold:number, reasons:string[], source:string, ms:number}>}
+   * @param {{routeModel?:boolean, bodyBytes?:number}} [options] routeModel: the client
+   *   handed the model choice to us; bodyBytes: size of the request body
+   * @returns {Promise<{effort:string, from:string|null, step:number, hold:number, reasons:string[], source:string,
+   *   cost:number|null, ms:number, model:'terra'|'sol'|null, fromModel:string|null, modelReasons:string[]}>}
    */
-  async function route(body, sessionKey, judgeTarget, turn = parseTurn(body.input)) {
+  async function route(body, sessionKey, judgeTarget, turn = parseTurn(body.input), { routeModel = false, bodyBytes = 0 } = {}) {
     const started = performance.now();
     const step = turn.steps.length + 1;
     const ladder = config.ladder;
@@ -65,7 +81,10 @@ export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } =
     }
 
     const state = nextState(prev, a, step);
-    remember(sessionKey, state);
+    const model = routeModel ? pickModel(config, { body, turn, prev, a, state, step, bodyBytes }) : null;
+    const fromModel = model && !isNewTurn(prev, step) && prev?.model && prev.model !== model.model ? prev.model : null;
+    // Effort-only requests keep the session's last routed model for the next routed one.
+    remember(sessionKey, { ...state, model: model?.model ?? prev?.model ?? null });
     return {
       effort: ladder[state.level],
       from: state.from == null ? null : ladder[state.from],
@@ -75,6 +94,9 @@ export function createRouter(config, { judgeFn = judge, decideFn = jevDecide } =
       source,
       cost,
       ms: Math.round(performance.now() - started),
+      model: model?.model ?? null,
+      fromModel,
+      modelReasons: model?.reasons ?? [],
     };
   }
 

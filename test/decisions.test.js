@@ -14,9 +14,10 @@ const turn = {
     { kind: 'verify', command: 'pytest', failed: true },
   ],
 };
-const answers = (score, stuck, confidence = 0.9) => ({
+const answers = (score, stuck, confidence = 0.9, strong = 0.2) => ({
   effort: { type: 'score', score, confidence, probabilities: {}, legend: {} },
   stuck: { type: 'noul', noul: stuck },
+  strong: { type: 'noul', noul: strong },
 });
 
 test('state summarizes the trajectory; questions follow the ladder', () => {
@@ -29,6 +30,16 @@ test('state summarizes the trajectory; questions follow the ladder', () => {
   assert.equal(q.effort.criteria.length, 3);
   assert.match(q.effort.criteria[0], /^low:/);
   assert.deepEqual(Object.keys(q.stuck.criteria), ['true', 'false']);
+  assert.deepEqual(Object.keys(q.strong.criteria), ['true', 'false']);
+  assert.match(q.strong.instructions, /NEXT generation.*strongest, most expensive coding model\?$/);
+});
+
+test('strong question: its probability is returned; a missing answer is null', () => {
+  assert.equal(toAssessment(answers(1, 0.1, 0.9, 0.85), LADDER, 0.3).strong, 0.85);
+  assert.equal(toAssessment(answers(1, 0.1, 0.9, 0), LADDER, 0.3).strong, 0);
+  const { strong: _omitted, ...withoutStrong } = answers(1, 0.1);
+  assert.equal(toAssessment(withoutStrong, LADDER, 0.3).strong, null);
+  assert.equal(toAssessment({ ...answers(1, 0.1), strong: { type: 'noul', noul: 'high' } }, LADDER, 0.3).strong, null);
 });
 
 test('answers map to rung, hold and release', () => {
@@ -61,11 +72,11 @@ test('jevDecide posts a Decisions request and returns cost', async () => {
   });
   try {
     const d = await jevDecide(turn, { url, apiKey: 'or-test', model: 'typesafe/jev-1.14', timeoutMs: 2000, ladder: LADDER, minConfidence: 0.3, sessionId: 's1' });
-    assert.deepEqual([d.target, d.hold, d.cost], [1, 1, 0.0000168]);
+    assert.deepEqual([d.target, d.hold, d.cost, d.strong], [1, 1, 0.0000168, 0.2]);
     assert.equal(seen[0].headers.authorization, 'Bearer or-test');
     assert.equal(seen[0].body.model, 'typesafe/jev-1.14');
     assert.equal(seen[0].body.session_id, 's1');
-    assert.deepEqual(Object.keys(seen[0].body.questions), ['effort', 'stuck']);
+    assert.deepEqual(Object.keys(seen[0].body.questions), ['effort', 'stuck', 'strong']);
   } finally {
     server.close();
   }

@@ -1,0 +1,127 @@
+// Which model serves a generation: GPT-6.1 Terra (fast, cheap; visual reasoning,
+// computer use, writing) or GPT-6.1 Sol (hard coding, long-horizon agents).
+// Pure functions; the router keeps the per-session state.
+import { MODEL_KEYS } from './config.js';
+import { HARD_TASK, LONG_PROMPT_CHARS } from './policy.js';
+import { isSyntheticUserText, textOf } from './trajectory.js';
+
+const STRONG_THRESHOLD = 0.6;
+const MAX_PART_DEPTH = 8;
+const IMAGE_PART_TYPES = new Set(['input_image', 'image_url']);
+const COMPUTER_TOOL_NAME = /browser|computer|screenshot|playwright/i;
+const WRITING_TASK = /\b(write|draft|rewrite|translate|email|article|docs|readme)\b|撰寫|改寫|翻譯|文章|郵件|文案|摘要/i;
+// Writing that also shows code is not a Terra job; it stays neutral.
+const CODE_SIGNAL = /```|\b(code|function|class|bug|error|exception|test|tests|compile|build|typescript|javascript|python|rust|golang|sql|api|endpoint|regex|script|repo|commit|refactor|implement)\b|\.(js|ts|tsx|jsx|py|rs|go|java|kt|cs|cpp|rb|php|swift|sh|ps1|json|ya?ml|toml)\b|[{}]|\w\(\)|;\s*\n|::|=>|程式|函式|錯誤|測試|編譯|腳本/i;
+// Efforts a model does not offer map onto the nearest one it does.
+const EFFORT_FLOOR = { sol: { none: 'low', minimal: 'low' }, terra: { minimal: 'low' } };
+
+const profile = (affinity, reasons) => ({ affinity, reasons });
+const choice = (model, reasons) => ({ model, reasons });
+
+/** True when any nested part carries an image (Responses input_image or Chat image_url). */
+function containsImage(value, depth = 0) {
+  if (depth > MAX_PART_DEPTH || value == null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some((v) => containsImage(v, depth + 1));
+  if (IMAGE_PART_TYPES.has(value.type)) return true;
+  return Object.values(value).some((v) => containsImage(v, depth + 1));
+}
+
+// An image-only user message is a real user message; only text-less synthetic context is not.
+function isRealUserItem(item) {
+  if (item?.role !== 'user') return false;
+  return containsImage(item.content) || !isSyntheticUserText(textOf(item.content));
+}
+
+/** Items of the current turn: from the latest real user message on. */
+function currentTurnItems(body) {
+  const items = Array.isArray(body?.input) ? body.input : Array.isArray(body?.messages) ? body.messages : [];
+  const start = items.findLastIndex(isRealUserItem);
+  return items.slice(Math.max(start, 0));
+}
+
+// A built-in computer-use tool counts as soon as it is offered. Browser or screenshot
+// tools from MCP servers are often mounted in every session, so they count only once
+// this turn actually calls one.
+function usesComputer(tools, turn) {
+  const offered = Array.isArray(tools) && tools.some((t) => typeof t?.type === 'string' && /computer/.test(t.type));
+  return offered || (turn?.steps ?? []).some((s) => COMPUTER_TOOL_NAME.test(String(s.command).split(/\s/, 1)[0]));
+}
+
+/**
+ * Which model the task suits, first matching rule wins.
+ * @param {object} body Responses or Chat Completions request body
+ * @param {{userText:string}} turn parsed trajectory of the current turn
+ * @returns {{affinity:'terra'|'sol'|'neutral', reasons:string[]}}
+ */
+export function taskProfile(body, turn) {
+  const userText = turn?.userText ?? '';
+  if (currentTurnItems(body).some((it) => containsImage(it))) return profile('terra', ['images in this turn']);
+  if (usesComputer(body?.tools, turn)) return profile('terra', ['computer use']);
+  if (HARD_TASK.test(userText)) return profile('sol', ['hard task']);
+  if (userText.length > LONG_PROMPT_CHARS) return profile('sol', [`long prompt (${userText.length} chars)`]);
+  if (WRITING_TASK.test(userText)) {
+    return CODE_SIGNAL.test(userText) ? profile('neutral', ['writing with code']) : profile('terra', ['writing task']);
+  }
+  return profile('neutral', ['no strong signal']);
+}
+
+/**
+ * True when the client's model name hands the model choice to the router:
+ * an autoModels alias, a configured model id, or 'openai/' + that id.
+ */
+export function wantsModelRouting(body, config) {
+  const requested = typeof body?.model === 'string' ? body.model.trim().toLowerCase() : '';
+  if (!requested) return false;
+  if (config.autoModels.some((alias) => alias.toLowerCase() === requested)) return true;
+  return MODEL_KEYS.some((key) => {
+    const id = config.models[key].toLowerCase();
+    return requested === id || requested === `openai/${id}`;
+  });
+}
+
+/** Upstream model id. OpenRouter addresses OpenAI models as 'openai/<id>'. */
+export function modelId(key, config, openRouter) {
+  const id = config.models[key];
+  return openRouter && !id.includes('/') ? `openai/${id}` : id;
+}
+
+/** Maps an effort the model lacks onto the nearest one it has. */
+export function clampEffort(key, effort) {
+  return EFFORT_FLOOR[key]?.[effort] ?? effort;
+}
+
+/**
+ * Model for the next generation.
+ * @param {{model?:string}|undefined} prev previous session state
+ * @param {{config:object, profile:object, newTurn:boolean, level:number, top:number,
+ *          strong:number|null, bodyBytes:number}} ctx
+ *   level: effort index chosen this generation; top: ladder.length - 1;
+ *   strong: probability from Jev's "strong" question, or null.
+ * @returns {{model:'terra'|'sol', reasons:string[]}}
+ */
+export function chooseModel(prev, ctx) {
+  if (ctx.config.modelMode !== 'auto') return choice(ctx.config.modelMode, ['pinned']);
+  return ctx.newTurn ? chooseForNewTurn(prev, ctx) : chooseMidTurn(prev, ctx);
+}
+
+function chooseForNewTurn(prev, { config, profile: taskProfileOf, bodyBytes }) {
+  if (taskProfileOf.affinity === 'sol') return choice('sol', [...taskProfileOf.reasons, 'new turn']);
+  if (prev?.model === 'sol' && bodyBytes > config.downgradeMaxBytes) {
+    // Switching re-reads the whole context uncached, so a large body stays on sol.
+    return choice('sol', [`new turn: stay sol, body ${bodyBytes} B over downgrade limit`]);
+  }
+  const reasons = [...taskProfileOf.reasons, 'new turn'];
+  return choice('terra', prev?.model === 'sol' ? [...reasons, 'downgrade within limit'] : reasons);
+}
+
+function chooseMidTurn(prev, { profile: taskProfileOf, level, top, strong }) {
+  // sol stays sol for the rest of the turn so the cached prefix is kept.
+  if (prev?.model === 'sol') return choice('sol', ['mid-turn: sol kept for cache']);
+  // A terra-affinity task keeps terra and uses the whole effort ladder.
+  if (taskProfileOf.affinity === 'terra') return choice('terra', [...taskProfileOf.reasons, 'terra affinity']);
+  if (level >= top) return choice('sol', ['mid-turn: top effort rung, escalate to sol']);
+  if (typeof strong === 'number' && strong >= STRONG_THRESHOLD) {
+    return choice('sol', [`mid-turn: strong ${strong.toFixed(2)}, escalate to sol`]);
+  }
+  return choice('terra', ['mid-turn: terra']);
+}
